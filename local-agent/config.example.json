@@ -1,0 +1,9 @@
+{
+  "AI_PROVIDER": "ollama",
+  "AI_MODEL": "qwen3:8b",
+  "AI_BASE_URL": "http://127.0.0.1:11434",
+  "AGENT_PORT": 8765,
+  "AI_TIMEOUT_SECONDS": 90,
+  "BROWSER_CHANNEL": "msedge",
+  "SYNC_ENABLED": true
+}
