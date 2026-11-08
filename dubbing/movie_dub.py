@@ -1,6 +1,7 @@
 """Local timeline-preserving Hebrew dubbing with per-speaker voices and checkpoints."""
 from pathlib import Path
 import os,sys,json,re,hashlib,subprocess,argparse,math,shutil,time,gc
+from voice_library import catalog, choose, transform_audio, estimate_film_style
 ROOT=Path(__file__).resolve().parent
 VERSION='movie-2'
 os.environ['HF_HUB_OFFLINE']='1'
@@ -240,6 +241,7 @@ def background_track(video,project,seconds):
 def render(video,project,seconds,segments,speakers,bank,output):
  import numpy as np,soundfile as sf
  mapping={s['id']:s['voice_id'] for s in speakers};valid={v['id'] for v in bank}
+ profiles={v['id']:v for v in bank}
  if any(v not in valid for v in mapping.values()):raise ValueError('יש לבחור קול לכל דובר לפני תחילת הדיבוב')
  if len(set(mapping.values()))!=len(mapping):raise ValueError('בחר קול שונה לכל דובר כדי לשמור על הבחנה ביניהם')
  cache=project/'speech';cache.mkdir(exist_ok=True)
@@ -251,7 +253,10 @@ def render(video,project,seconds,segments,speakers,bank,output):
   part=cache/(key+'.wav')
   if not part.exists():
    if engine is None:engine=HebrewVoiceEngine(bank)
-   try:x=engine.synthesize(s['hebrew'],mapping[s['speaker']],s['end']-s['start'],int(key[:8],16)%2**31)
+   try:
+    choice=profiles[mapping[s['speaker']]]
+    x=engine.synthesize(s['hebrew'],choice.get('base_id',choice['id']),s['end']-s['start'],int(key[:8],16)%2**31)
+    x=transform_audio(x,24000,choice['id'])
    except Exception as e:raise RuntimeError('שורה '+s['id']+': '+str(e)) from e
    temp=part.with_suffix('.tmp.wav');sf.write(str(temp),x,24000,subtype='PCM_16');os.replace(temp,part)
   parts.append((s,part));print(f'דיבוב קטע {i+1}/{len(segments)} (תוצאות נשמרות להמשך)',flush=True)
@@ -286,7 +291,7 @@ def render(video,project,seconds,segments,speakers,bank,output):
  print('הסרטון המדובב מוכן',flush=True)
 
 def main():
- p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--output',required=True);p.add_argument('--translate-only',action='store_true');p.add_argument('--hebrew-override');p.add_argument('--voice-map');p.add_argument('--max-duration',type=float,default=10800);p.add_argument('--parent-pid',type=int)
+ p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--output',required=True);p.add_argument('--translate-only',action='store_true');p.add_argument('--hebrew-override');p.add_argument('--voice-map');p.add_argument('--film-style',choices=('auto','live','animation','mixed'),default='auto');p.add_argument('--max-duration',type=float,default=10800);p.add_argument('--parent-pid',type=int)
  a=p.parse_args();video=Path(a.input).resolve(strict=True);output=Path(a.output).resolve();output.parent.mkdir(parents=True,exist_ok=True)
  if a.parent_pid and os.name=='nt':
   import threading,ctypes
@@ -310,7 +315,9 @@ def main():
   try:msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
   except OSError:raise RuntimeError('אותו סרטון כבר מעובד. המתן או עצור את המשימה הפעילה')
  if shutil.disk_usage(project).free < seconds*1800000+video.stat().st_size:raise RuntimeError('אין מספיק מקום פנוי להפרדת שמע, קובצי עבודה והפקת הסרטון (כולל צלילי רקע)')
- bank=read(ROOT/'models/hebrew-voices/voices.json')['voices']
+ bank=catalog()
+ detected_style=estimate_film_style(video) if a.film_style=='auto' else {'style':a.film_style,'confidence':1.0,'method':'manual'}
+ film_style=detected_style['style']
  manifest=read(project/'manifest.json')
  if manifest is None:
   wav=project/'source.wav'
@@ -331,6 +338,12 @@ def main():
   manifest={'version':VERSION,'duration':seconds,'speakers':speakers,'segments':segments,'overlapping_speech':overlaps}
   atomic(project/'manifest.json',manifest)
  segments=manifest['segments'];speakers=[dict(s) for s in manifest['speakers']]
+ # Select per-speaker cartoon presets for recognized animation, preserving manual overrides.
+ if film_style=='animation':
+  assigned=set()
+  for speaker in speakers:
+   match=choose(speaker.get('suggested_type'),style='animation',used=assigned)
+   if match:speaker['voice_id']=match;assigned.add(match)
  # Some legitimate voices are low-confidence but still have a male/female prediction.
  # Do not fail an entire long film merely because the confidence was below 0.8.
  already={s['voice_id'] for s in speakers if s.get('voice_id')}
@@ -349,7 +362,7 @@ def main():
   for s in speakers:s['voice_id']=selected.get(s['id'],s['voice_id'])
  outdir=output.parent/(output.stem+'_work');outdir.mkdir(exist_ok=True)
  (outdir/'translation.txt').write_text(review_text(segments),encoding='utf-8')
- atomic(outdir/'review.json',{'speakers':speakers,'voices':bank,'duration':seconds,'overlapping_speech':manifest['overlapping_speech'],'project':project.name})
+ atomic(outdir/'review.json',{'speakers':speakers,'voices':bank,'duration':seconds,'overlapping_speech':manifest['overlapping_speech'],'project':project.name,'film_style':detected_style})
  if a.translate_only:
   print(f'DUB_PROGRESS|done|1|1|{time.time():.3f}',flush=True)
   print('התרגום והקולות מוכנים לבדיקה ולאישור',flush=True);return

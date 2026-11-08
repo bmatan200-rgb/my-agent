@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,7 @@ DUBBER = Path.home() / "video-dubbing-local" / "movie_dub.py"
 
 
 def load_dubber():
+    sys.path.insert(0, str(DUBBER.parent))
     spec = importlib.util.spec_from_file_location("local_movie_dub_test", DUBBER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
